@@ -65,27 +65,6 @@ DECLARE_UNNAMED_NODE( ob_ide_ctrl, 0, sizeof(int));
 
 static int current_channel = FIRST_UNIT;
 
-static struct ide_channel *channels = NULL;
-
-static inline void ide_add_channel(struct ide_channel *chan)
-{
-	chan->next = channels;
-	channels = chan;
-}
-
-static struct ide_channel *ide_seek_channel(phandle_t ph)
-{
-	struct ide_channel *current;
-
-	current = channels;
-	while (current) {
-		if (current->ph == ph)
-			return current;
-		current = current->next;
-	}
-	return NULL;
-}
-
 /*
  * don't be pedantic
  */
@@ -1230,18 +1209,10 @@ ob_ide_open(int *idx)
 	int ret=1;
 	phandle_t ph;
 	struct ide_drive *drive;
-	struct ide_channel *chan;
-	int unit;
 
-	fword("my-unit");
-	unit = POP();
-
-	fword("my-parent");
-	fword("ihandle>phandle");
-	ph=(phandle_t)POP();
-
-	chan = ide_seek_channel(ph);
-	drive = &chan->drives[unit];
+	PUSH(find_ih_method("drive", my_self()));
+	fword("execute");
+	drive = cell2pointer(POP());
 	*(struct ide_drive **)idx = drive;
 
 	IDE_DPRINTF("opening channel %d unit %d\n", idx[1], idx[0]);
@@ -1426,8 +1397,6 @@ int ob_ide_init(const char *path, uint32_t io_port0, uint32_t ctl_port0,
 			chan->drives[j].nr = i * 2 + j;
 		}
 
-		ide_add_channel(chan);
-
 		ob_ide_probe(chan);
 
 		if (!chan->present)
@@ -1437,7 +1406,9 @@ int ob_ide_init(const char *path, uint32_t io_port0, uint32_t ctl_port0,
 
 		fword("new-device");
 		dnode = get_cur_dev();
-		chan->ph = dnode;
+
+		PUSH(pointer2cell(chan));
+		feval("value chan");
 
 		BIND_NODE_METHODS(get_cur_dev(), ob_ide_ctrl);
 
@@ -1500,6 +1471,9 @@ int ob_ide_init(const char *path, uint32_t io_port0, uint32_t ctl_port0,
 			push_str("block");
 			fword("device-type");
 
+			PUSH(pointer2cell(drive));
+			feval("value drive");
+
 			BIND_NODE_METHODS(dnode, ob_ide);
 			fword("is-deblocker");
 
@@ -1523,23 +1497,21 @@ int ob_ide_init(const char *path, uint32_t io_port0, uint32_t ctl_port0,
 
 void ob_ide_quiesce(void)
 {
-	struct ide_channel *channel;
-	int i;
+	phandle_t ph = 0, xt;
+	struct ide_drive *drive;
 
-	channel = channels;
-	while (channel) {
-		for (i = 0; i < 2; i++) {
-			struct ide_drive *drive = &channel->drives[i];
+	while ((ph = dt_iterate_type(ph, "block"))) {
+		xt = find_package_method("drive", ph);
 
-			if (!drive->present)
-				continue;
+		if (xt) {
+			PUSH(xt);
+			fword("execute");
+			drive = cell2pointer(POP());
 
 			ob_ide_select_drive(drive);
 			ob_ide_software_reset(drive);
 			ob_ide_device_type_check(drive);
 		}
-
-		channel = channel->next;
 	}
 }
 
@@ -1620,13 +1592,13 @@ int macio_ide_init(const char *path, uint32_t addr, int nb_channels)
 			continue;
 		}
 
-		ide_add_channel(chan);
-
 		ob_ide_identify_drives(chan);
 
 		fword("new-device");
 		dnode = get_cur_dev();
-		chan->ph = dnode;
+
+		PUSH(pointer2cell(chan));
+		feval("value chan");
 
 		snprintf(nodebuff, sizeof(nodebuff), DEV_NAME "-%d", current_channel);
 		push_str(nodebuff);
@@ -1740,6 +1712,9 @@ int macio_ide_init(const char *path, uint32_t addr, int nb_channels)
 
 			push_str("block");
 			fword("device-type");
+
+			PUSH(pointer2cell(drive));
+			feval("value drive");
 
 			BIND_NODE_METHODS(dnode, ob_ide);
 			fword("is-deblocker");
